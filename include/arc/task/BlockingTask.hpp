@@ -1,0 +1,171 @@
+#pragma once
+#include <arc/future/Future.hpp>
+#include <arc/task/Waker.hpp>
+#include <arc/task/CondvarWaker.hpp>
+#include <arc/util/Function.hpp>
+
+#include <asp/sync/SpinLock.hpp>
+#include <asp/ptr/SharedPtr.hpp>
+
+namespace arc {
+
+struct BlockingTaskVtable {
+    using ExecuteFn = void(*)(void*);
+
+    ExecuteFn execute = nullptr;
+};
+
+struct BlockingTaskBase {
+    BlockingTaskBase(asp::WeakPtr<Runtime> runtime, const BlockingTaskVtable* vtable)
+        : m_runtime(std::move(runtime)), m_vtable(vtable) {}
+
+    void execute() {
+        m_vtable->execute(this);
+    }
+
+protected:
+    const BlockingTaskVtable* m_vtable;
+    asp::WeakPtr<Runtime> m_runtime;
+};
+
+template <typename T>
+struct BlockingTask : BlockingTaskBase {
+    static asp::SharedPtr<BlockingTask> create(asp::WeakPtr<Runtime> runtime, arc::MoveOnlyFunction<T()> func) {
+        return asp::make_shared<BlockingTask>(std::move(runtime), std::move(func));
+    }
+
+    BlockingTask(asp::WeakPtr<Runtime> runtime, arc::MoveOnlyFunction<T()> func)
+        : BlockingTaskBase(std::move(runtime), &vtable), m_func(std::move(func)) {}
+
+    std::optional<T> pollTask(Context& cx) noexcept {
+        auto data = m_data.lock();
+
+        if (data->m_result) {
+            auto out = std::move(*data->m_result);
+            data->m_result.reset();
+            return out;
+        } else {
+            auto myWaker = cx.waker();
+            if (myWaker && (!data->m_awaiter || !data->m_awaiter.equals(*myWaker))) {
+                data->m_awaiter = myWaker->clone();
+            }
+
+            return std::nullopt;
+        }
+    }
+
+private:
+    struct Data {
+        std::optional<T> m_result;
+        Waker m_awaiter;
+    };
+
+    arc::MoveOnlyFunction<T()> m_func;
+    asp::SpinLock<Data> m_data;
+
+    static void vExecute(void* ptr) {
+        auto* task = static_cast<BlockingTask*>(ptr);
+        T result = task->m_func();
+
+        auto data = task->m_data.lock();
+        data->m_result = std::move(result);
+
+        if (data->m_awaiter) {
+            data->m_awaiter.wake();
+        }
+    }
+
+    static constexpr BlockingTaskVtable vtable = {
+        .execute = &BlockingTask::vExecute,
+    };
+};
+
+// Specialization for void
+template <>
+struct BlockingTask<void> : BlockingTaskBase {
+    static asp::SharedPtr<BlockingTask> create(asp::WeakPtr<Runtime> runtime, arc::MoveOnlyFunction<void()> func) {
+        return asp::make_shared<BlockingTask>(std::move(runtime), std::move(func));
+    }
+
+    BlockingTask(asp::WeakPtr<Runtime> runtime, arc::MoveOnlyFunction<void()> func)
+        : BlockingTaskBase(std::move(runtime), &vtable), m_func(std::move(func)) {}
+
+    bool pollTask(Context& cx) {
+        auto data = m_data.lock();
+
+        if (data->m_completed) {
+            return true;
+        } else {
+            auto myWaker = cx.waker();
+            if (myWaker && (!data->m_awaiter || !data->m_awaiter.equals(*myWaker))) {
+                data->m_awaiter = myWaker->clone();
+            }
+
+            return false;
+        }
+    }
+
+private:
+    struct Data {
+        bool m_completed = false;
+        Waker m_awaiter;
+    };
+
+    arc::MoveOnlyFunction<void()> m_func;
+    asp::SpinLock<Data> m_data;
+
+    static void vExecute(void* ptr) {
+        auto* task = static_cast<BlockingTask*>(ptr);
+        task->m_func();
+
+        auto data = task->m_data.lock();
+        data->m_completed = true;
+
+        if (data->m_awaiter) {
+            data->m_awaiter.wake();
+        }
+    }
+
+    static constexpr BlockingTaskVtable vtable = {
+        .execute = &BlockingTask::vExecute,
+    };
+};
+
+template <typename T = void>
+struct BlockingTaskHandle : NoexceptPollable<BlockingTaskHandle<T>, T> {
+public:
+    BlockingTaskHandle(asp::SharedPtr<BlockingTask<T>> task) : m_task(std::move(task)) {}
+    BlockingTaskHandle(const BlockingTaskHandle&) = delete;
+    BlockingTaskHandle& operator=(const BlockingTaskHandle&) = delete;
+    BlockingTaskHandle(BlockingTaskHandle&& other) noexcept = default;
+    BlockingTaskHandle& operator=(BlockingTaskHandle&& other) noexcept = default;
+
+    auto poll(Context& cx) noexcept {
+        return m_task->pollTask(cx);
+    }
+
+    /// Blocks the current thread until the task is complete.
+    /// Do not use in async code - simply co_await instead.
+    auto blockOn() noexcept {
+        CondvarWaker cvw{};
+        auto waker = cvw.waker();
+        Context cx { &waker, nullptr };
+
+        while (true) {
+            auto result = this->poll(cx);
+
+            if constexpr (std::is_void_v<T>) {
+                if (result) return;
+            } else {
+                if (result) return std::move(*result);
+            }
+
+            cvw.wait();
+        }
+    }
+private:
+    friend class Runtime;
+    asp::SharedPtr<BlockingTask<T>> m_task;
+};
+
+}
