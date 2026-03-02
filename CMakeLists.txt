@@ -49,7 +49,7 @@ endif()
 # Add qsox if networking is enabled
 if (ARC_FEATURE_NET)
     if (NOT TARGET qsox)
-        CPMAddPackage("gh:dankmeme01/qsox#1cd9dd7")
+        CPMAddPackage("gh:nipfswd/qsox#4f09592")
     endif()
     target_link_libraries(arc PUBLIC qsox)
 endif()
