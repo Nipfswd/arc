@@ -8,7 +8,7 @@ using enum std::memory_order;
 
 using namespace arc;
 
-TEST(mpsc, VeryBasicSync) {
+TEST(MPSC, VeryBasicSync) {
     Waker waker = Waker::noop();
     Context cx { &waker };
 
@@ -44,7 +44,7 @@ TEST(mpsc, VeryBasicSync) {
     trace("10");
 }
 
-TEST(mpsc, Basic) {
+TEST(MPSC, Basic) {
     Waker waker = Waker::noop();
     Context cx { &waker };
 
@@ -91,7 +91,7 @@ TEST(mpsc, Basic) {
     EXPECT_FALSE(rx.tryRecv().isOk());
 }
 
-TEST(mpsc, ClosedBySender) {
+TEST(MPSC, ClosedBySender) {
     Waker waker = Waker::noop();
     Context cx { &waker };
 
@@ -112,7 +112,7 @@ TEST(mpsc, ClosedBySender) {
 }
 
 
-TEST(mpsc, ClosedByReceiver) {
+TEST(MPSC, ClosedByReceiver) {
     Waker waker = Waker::noop();
     Context cx { &waker };
 
@@ -145,7 +145,7 @@ TEST(mpsc, ClosedByReceiver) {
     EXPECT_EQ(tr.unwrapErr(), 5);
 }
 
-TEST(mpsc, Unbounded) {
+TEST(MPSC, Unbounded) {
     Waker waker = Waker::noop();
     Context cx { &waker };
 
@@ -162,7 +162,7 @@ TEST(mpsc, Unbounded) {
     }
 }
 
-TEST(mpsc, Rendezvous) {
+TEST(MPSC, Rendezvous) {
     Waker waker = Waker::noop();
     Context cx { &waker };
 
@@ -194,7 +194,7 @@ void moveFutureHelper(auto& cx, auto txfut, auto rxfut) {
     EXPECT_TRUE(txfut.poll(cx).has_value());
 }
 
-TEST(mpsc, MoveFuture) {
+TEST(MPSC, MoveFuture) {
     Waker waker = Waker::noop();
     Context cx { &waker };
 
@@ -204,15 +204,15 @@ TEST(mpsc, MoveFuture) {
     moveFutureHelper(cx, std::move(futsend), std::move(futrecv));
 }
 
-TEST(mpsc, LargeVolumeSmallChannel) {
+TEST(MPSC, LargeVolumeSmallChannel) {
     auto rt = arc::Runtime::create(4);
     auto [tx, rx] = mpsc::channel<int>(8);
     auto [outTx, outRx] = mpsc::channel<uint64_t>(1);
 
 
-    auto [a, b] = rt->blockOn([&](this auto self) -> arc::Future<std::pair<uint64_t, uint64_t>> {
+    auto [a, b] = rt->blockOn([&] -> arc::Future<std::pair<uint64_t, uint64_t>> {
         // spawn consumer thread
-        arc::spawn([outTx, rx = std::move(rx)](this auto self) -> arc::Future<> {
+        arc::spawn([outTx, rx = std::move(rx)] mutable -> arc::Future<> {
             uint64_t sum = 0;
 
             while (true) {
@@ -223,7 +223,7 @@ TEST(mpsc, LargeVolumeSmallChannel) {
             }
 
             EXPECT_TRUE((co_await outTx.send(sum)).isOk());
-        }());
+        });
 
         // produce a large amount of data
         uint64_t actualSum = 0;
@@ -237,21 +237,21 @@ TEST(mpsc, LargeVolumeSmallChannel) {
         auto taskSum = co_await outRx.recv();
         EXPECT_TRUE(taskSum.isOk());
         co_return std::make_pair(actualSum, *taskSum);
-    }());
+    });
 
     EXPECT_EQ(a, b);
 }
 
 
-TEST(mpsc, LargeVolumeLargeChannel) {
+TEST(MPSC, LargeVolumeLargeChannel) {
     auto rt = arc::Runtime::create(4);
     auto [tx, rx] = mpsc::channel<int>(8192);
     auto [outTx, outRx] = mpsc::channel<uint64_t>(1);
 
     // produce a large amount of data
-    auto [a, b] = rt->blockOn([&](this auto self) -> arc::Future<std::pair<uint64_t, uint64_t>> {
+    auto [a, b] = rt->blockOn([&] -> arc::Future<std::pair<uint64_t, uint64_t>> {
         // spawn consumer thread
-        arc::spawn([outTx, rx = std::move(rx)](this auto self) -> arc::Future<> {
+        arc::spawn([outTx, rx = std::move(rx)] mutable -> arc::Future<> {
             uint64_t sum = 0;
 
             for (size_t counter = 1;; counter++) {
@@ -263,7 +263,7 @@ TEST(mpsc, LargeVolumeLargeChannel) {
             trace("consumer done");
 
             EXPECT_TRUE((co_await outTx.send(sum)).isOk());
-        }());
+        });
 
         uint64_t actualSum = 0;
         for (int i = 0; i < 4096; i++) {
@@ -276,7 +276,7 @@ TEST(mpsc, LargeVolumeLargeChannel) {
         auto taskSum = co_await outRx.recv();
         EXPECT_TRUE(taskSum.isOk());
         co_return std::make_pair(actualSum, *taskSum);
-    }());
+    });
 
     EXPECT_EQ(a, b);
 }
